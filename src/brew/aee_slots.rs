@@ -160,14 +160,19 @@ pub const BITMAP: &[&str] = &[
     "GetTransparencyColor",
 ];
 
-/// Methods of the canvas `0x0101e443`. Only slot 7 is called; the others stay as placeholders so
-/// that an unexpected call surfaces as unimplemented.
+/// Methods of the canvas `0x0101e443`, the `ICanvas` a widget draw handler receives. Slots 3, 4
+/// and 7 are read from usage; 5 and 6 stay as placeholders so that an unexpected call surfaces as
+/// unimplemented.
+///
+/// The Z-Wheel's HTML container (`0x30bdc` of `tectoy.mod`) shows 3 and 4: it takes the bitmap
+/// (`GetBitmap(this, &out)`, then `GetInfo(out, &info, 12)` on it), points the canvas at an
+/// offscreen copy (`SetBitmap(this, copy)`), draws, and points it back.
 pub const CANVAS: &[&str] = &[
     "AddRef",
     "Release",
     "QueryInterface",
-    "slot3",
-    "slot4",
+    "GetBitmap",
+    "SetBitmap",
     "slot5",
     "slot6",
     "GetDisplay",
@@ -1103,6 +1108,10 @@ pub const WIDGET: &[&str] = &[
     // `slot17(this, id, model)`, at `0x23860` and `0x23d0c` of tectoy.mod: binds the font model
     // (0x8000) or another model to the roller widget in `tectoy_rollerwidget.c`.
     "Slot17",
+    // Not a method the game calls through the vtable: the address handed out by slot 4 as the
+    // **previous** handler of a widget that had none, which in BREW is the widget's own default
+    // `HandleEvent`. See `Machine::default_handle_event`.
+    "DefaultHandler",
 ];
 
 /// Methods of the `IControl` used by Zenonia's text subsystem.
