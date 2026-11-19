@@ -114,9 +114,15 @@ impl ObjectStore {
         let remaining = *count;
         if remaining == 0 {
             self.refs.remove(&addr);
-            self.kinds.remove(&addr);
+            // **Only an object of ours gives its address back.** `add_ref` counts whatever it is
+            // handed, and a host that counts a pointer of the game's — the Z-Wheel's
+            // Registration screen passes one that lives on its stack, `0x200fff2c` — would put
+            // that address on the list when the count ran out. The next object was then born
+            // there: the vtable pointer went over a saved return address, and the second trip to
+            // Registration returned to `0xe000b400`.
+            let ours = self.kinds.remove(&addr).is_some();
             // Never the same address twice in the list: that would be two live objects on it.
-            if !self.free_slots.contains(&addr) {
+            if ours && !self.free_slots.contains(&addr) {
                 self.free_slots.push(addr);
             }
         }
@@ -215,6 +221,20 @@ impl crate::save_state::Saveable for ObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A count kept for an address the store never handed out must not turn that address into
+    /// a place for the next object.
+    #[test]
+    fn a_foreign_address_is_never_handed_out() {
+        let mut store = ObjectStore::new(0x4000_0000, 4096);
+        let stack = 0x200f_ff2c;
+        assert_eq!(store.add_ref(stack), 1);
+        assert_eq!(store.release(stack), 0);
+        assert_eq!(store.create(Interface::Bitmap), Some(0x4000_0000));
+        // One of ours still comes back.
+        store.release(0x4000_0000);
+        assert_eq!(store.create(Interface::Bitmap), Some(0x4000_0000));
+    }
 
     /// **The object ledger comes back whole**: the next address, the released ones, the interface
     /// of each live object and the reference count.
