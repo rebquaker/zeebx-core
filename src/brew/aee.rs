@@ -74,7 +74,7 @@ pub fn from_code(value: u32) -> Option<Interface> {
         41 => Interface::ZeeboMcp,
         42 => Interface::Config,
         43 => Interface::Source,
-        44 => Interface::Peek,
+        44 => Interface::GetLine,
         45 => Interface::Vector,
         46 => Interface::Class28e3c,
         47 => Interface::Cm,
@@ -92,6 +92,7 @@ pub fn from_code(value: u32) -> Option<Interface> {
         59 => Interface::EglGetColorBuffer,
         60 => Interface::Gles11ExtPak,
         61 => Interface::Joystick,
+        63 => Interface::SoundPlayer,
         _ => return None,
     })
 }
@@ -107,7 +108,7 @@ mod encoding_tests {
     /// unreadable.
     #[test]
     fn every_interface_has_a_number_and_round_trips() {
-        let all: [(u32, &str); 62] = [
+        let all: [(u32, &str); 63] = [
         (0, "Shell"),
         (1, "Module"),
         (2, "Applet"),
@@ -152,7 +153,7 @@ mod encoding_tests {
         (41, "ZeeboMcp"),
         (42, "Config"),
         (43, "Source"),
-        (44, "Peek"),
+        (44, "GetLine"),
         (45, "Vector"),
         (46, "Class28e3c"),
         (47, "Cm"),
@@ -170,6 +171,7 @@ mod encoding_tests {
         (59, "EglGetColorBuffer"),
         (60, "Gles11ExtPak"),
         (61, "Joystick"),
+        (63, "SoundPlayer"),
         ];
         for (value, name) in all {
             let iface = from_code(value).unwrap_or_else(|| panic!("{name} ({value}) did not come back"));
@@ -270,6 +272,9 @@ pub enum Interface {
     Joystick = 61,
     /// The `0x01001039`: MD5 with the context in the game's memory. See [`aee_slots::HASH_CTX`].
     HashCtx = 62,
+    /// `AEECLSID_SOUNDPLAYER`: BREW 1.x's file player, deprecated by `IMedia`. See
+    /// [`aee_slots::SOUND_PLAYER`].
+    SoundPlayer = 63,
     /// The console's `AEECLSID_SQLMGR`: opens SQLite databases. See [`crate::brew::sql`].
     SqlMgr = 36,
     /// A database opened by [`Interface::SqlMgr`].
@@ -285,16 +290,19 @@ pub enum Interface {
     ///
     /// | slot | method | who uses it |
     /// |---|---|---|
-    /// | 3 | `PeekSourceFromSource(po, ISource*, nMax, IPeek**)` | Z-Wheel, to read `tectoy.cfg` line by line |
+    /// | 3 | `GetLineFromSource(po, ISource*, nBufSize, IGetLine**)` | Z-Wheel, to read `tectoy.cfg` line by line |
     /// | 5 | `SourceFromMemory(po, pBuf, nSize, pfn, pUser, ISource**)` | Zeeboids, to wrap the POST body |
-    /// | 6 | `SourceFromFile(po, IFile*, ISource**)` | Z-Wheel, over the freshly opened file |
+    /// | 6 | `SourceFromAStream(po, IAStream*, ISource**)` | Z-Wheel, over the freshly opened `IFile` |
     ///
     /// `SourceFromMemory` is what settles it: it has **six** parameters, and the output pointer
     /// is the second on the stack — exactly where Zeeboids' code read it, in a stretch we had
     /// named "send". It sends nothing: it wraps the body to hand it to `IWeb`. That is where the
     /// Zeeboids bridge takes the body from, and that is why it works.
     ///
-    /// There are seven methods, and the firmware vtable at `0x10a785e4` also has seven.
+    /// The names come from `AEESource.h` in SDK 4.0.2, which has ten slots. The firmware vtable
+    /// at `0x10a785e4` was read with seven, so the last three — `AStreamFromSource`,
+    /// `PeekFromMemory` and `PeekFromSource` — are not in our table: whether they exist on the
+    /// console is not settled.
     SourceUtil = 39,
     /// `0x01028e51`, the Z-Wheel's interface widget — the root form included.
     ///
@@ -374,12 +382,15 @@ pub enum Interface {
     Config = 42,
     /// A BREW `ISource`: bytes with a cursor. Created by [`Interface::SourceUtil`].
     Source = 43,
-    /// A BREW `IPeek`: line-by-line reading over an [`Interface::Source`].
+    /// A BREW `IGetLine`: line-by-line reading over an [`Interface::Source`], what
+    /// `ISOURCEUTIL_GetLineFromSource` hands out. It is an `IPeek` with `GetLine` and
+    /// `UngetLine` on top (`INHERIT_IGetline` in `AEESource.h`).
     ///
-    /// Of `IPeek` we only know **slot 8**, because it is the only one the Z-Wheel calls: it passes
-    /// the address of a `{pointer, size}` pair and the number 3, and expects to receive the next
-    /// line. The others stay unnamed — a call to them needs to surface as unimplemented.
-    Peek = 44,
+    /// Only **slot 8**, `GetLine`, is known to be called, by the Z-Wheel: it passes the address
+    /// of a `{pointer, size}` pair and the number 3 (`IGETLINE_LF`), and expects to receive the
+    /// next line. The others are named from the header; a host that serves only `GetLine` still
+    /// has to let a call to them surface as unimplemented.
+    GetLine = 44,
     /// `0x01028e35`, the Z-Wheel's generic list — what the game calls a "vector model".
     ///
     /// It is not in the firmware's class table, so the slots came from the game's code, and each
@@ -504,7 +515,7 @@ impl Interface {
     /// to agree — hence the list exists in one place only, with a test that checks the
     /// correspondence. When they diverged, an object received another interface's vtable and the
     /// call ended up in the wrong method, with the symptom miles away from the cause.
-    pub const ALL: [Interface; 63] = [
+    pub const ALL: [Interface; 64] = [
         Self::Shell,
         Self::Module,
         Self::Applet,
@@ -549,7 +560,7 @@ impl Interface {
         Self::ZeeboMcp,
         Self::Config,
         Self::Source,
-        Self::Peek,
+        Self::GetLine,
         Self::Vector,
         Self::Class28e3c,
         Self::Cm,
@@ -568,6 +579,7 @@ impl Interface {
         Self::Gles11ExtPak,
         Self::Joystick,
         Self::HashCtx,
+        Self::SoundPlayer,
     ];
 
     /// Name used in the logs — it matches the SDK's naming.
@@ -615,6 +627,7 @@ impl Interface {
             Self::Gles11ExtPak => "IGLES11ExtPak",
             Self::Joystick => "IJoystick",
             Self::HashCtx => "IHashCTX",
+            Self::SoundPlayer => "ISoundPlayer",
             Self::SqlMgr => "ISQLMgr",
             Self::SqlDatabase => "ISQLDatabase",
             Self::Collection => "IColecao",
@@ -626,7 +639,7 @@ impl Interface {
             Self::ZeeboMcp => "IZeeboMCP",
             Self::Config => "IConfig",
             Self::Source => "ISource",
-            Self::Peek => "IPeek",
+            Self::GetLine => "IGetLine",
             Self::Vector => "IVetor",
             Self::Class28e3c => "I28e3c",
             Self::Cm => "ICM",
@@ -684,6 +697,7 @@ impl Interface {
             Self::Gles11ExtPak => aee_slots::GLES11_EXT_PAK,
             Self::Joystick => aee_slots::JOYSTICK,
             Self::HashCtx => aee_slots::HASH_CTX,
+            Self::SoundPlayer => aee_slots::SOUND_PLAYER,
             Self::SqlMgr => aee_slots::SQL_MGR,
             Self::SqlDatabase => aee_slots::SQL_DATABASE,
             Self::Collection => aee_slots::COLLECTION,
@@ -695,7 +709,7 @@ impl Interface {
             Self::ZeeboMcp => aee_slots::ZEEBO_MCP,
             Self::Config => aee_slots::CONFIG,
             Self::Source => aee_slots::SOURCE,
-            Self::Peek => aee_slots::PEEK,
+            Self::GetLine => aee_slots::GET_LINE,
             Self::Vector => aee_slots::VECTOR,
             Self::Class28e3c => aee_slots::CLASS_28E3C,
             Self::Cm => aee_slots::CM,
@@ -768,6 +782,7 @@ impl Interface {
             60 => Self::Gles11ExtPak,
             61 => Self::Joystick,
             62 => Self::HashCtx,
+            63 => Self::SoundPlayer,
             35 => Self::Probe,
             36 => Self::SqlMgr,
             37 => Self::SqlDatabase,
@@ -777,7 +792,7 @@ impl Interface {
             41 => Self::ZeeboMcp,
             42 => Self::Config,
             43 => Self::Source,
-            44 => Self::Peek,
+            44 => Self::GetLine,
             45 => Self::Vector,
             46 => Self::Class28e3c,
             47 => Self::Cm,
@@ -901,5 +916,23 @@ mod tests {
         assert_eq!(Interface::Module.method(2), Some("CreateInstance"));
         assert_eq!(Interface::Applet.method(2), Some("HandleEvent"));
         assert_eq!(Interface::Display.method(7), Some("Update"));
+    }
+
+    /// The vtable order of `INHERIT_IFont` in `inc/AEEIFont.h`. The alphabetical `#define`s of
+    /// `AEEFont.h` put `GetInfo` first, and that is how 4 and 5 were swapped here once.
+    #[test]
+    fn the_font_slots_follow_inherit_ifont() {
+        let slots: Vec<_> = (0..6).map(|slot| Interface::Font.method(slot)).collect();
+        assert_eq!(
+            slots,
+            [
+                Some("AddRef"),
+                Some("Release"),
+                Some("QueryInterface"),
+                Some("DrawText"),
+                Some("MeasureText"),
+                Some("GetInfo"),
+            ]
+        );
     }
 }
